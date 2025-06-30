@@ -175,13 +175,12 @@ class GameState:
 
         best_pair = None
         best_score = float('inf')
-        for target in self.table.unbeaten():
-            beaters = [c for c in self.player if c.beats(target, self.trump)]
-            if not beaters:
-                continue
-            cand = min(beaters, key=self.cost)
-            extra_prob = self.prob_opp(lambda x: x.rank == target.rank)
-            score = self.cost(cand) * (1 + extra_prob)
+        table_ranks = {atk.rank for atk, d in self.table.pairs}
+        table_ranks.update(d.rank for _, d in self.table.pairs if d)
+            future_ranks = table_ranks | {target.rank, cand.rank}
+            extra = (self.prob_opp(lambda x: x.rank in future_ranks) +
+                     self.sim_prob_opp(lambda x: x.rank in future_ranks)) / 2
+            score = self.cost(cand) * (1 + extra)
             if score < best_score:
                 best_score = score
                 best_pair = (target, cand)

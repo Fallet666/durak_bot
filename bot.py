@@ -71,6 +71,8 @@ class Table:
 
 
 class GameState:
+    """Holds all information needed for decision making."""
+
     def __init__(self):
         self.trump: Optional[str] = None
         self.trump_card: Optional[Card] = None
@@ -92,11 +94,33 @@ class GameState:
         return [Card(k) for k in ALL_CARDS if k not in seen]
 
     def prob_opp(self, pred: Callable[[Card], bool]) -> float:
+        """Probability that opponent has at least one card matching predicate."""
         pool = self.unseen()
         good = [c for c in pool if pred(c)]
+        n = len(pool)
+        k = len(good)
+        m = min(self.opp_size, n)
+        if n == 0 or m == 0 or k == 0:
+            return 0.0
+        from math import comb
+        try:
+            none_prob = comb(n - k, m) / comb(n, m)
+        except ValueError:
+            return 0.0
+        return 1 - none_prob
+
+    def sim_prob_opp(self, pred: Callable[[Card], bool], trials: int = 500) -> float:
+        """Monte Carlo estimate of prob opponent has a card satisfying predicate."""
+        pool = self.unseen()
         if not pool or self.opp_size == 0:
             return 0.0
-        return min(1.0, len(good) / len(pool) * self.opp_size / len(pool))
+        hits = 0
+        sample_size = min(self.opp_size, len(pool))
+        for _ in range(trials):
+            hand = random.sample(pool, sample_size)
+            if any(pred(c) for c in hand):
+                hits += 1
+        return hits / trials
 
     # ---------- cost ----------
     def cost(self, card: Card) -> int:
@@ -105,29 +129,46 @@ class GameState:
 
     # ---------- decision ----------
     def best_attack(self) -> Optional[Card]:
-        best, best_score = None, 1e9
+        """Choose the attack card with minimal expected cost."""
+        best, best_score = None, float('inf')
         for card in self.player:
-            p_cover = self.prob_opp(lambda x: x.beats(card, self.trump))
-            score = p_cover * 25 + self.cost(card)
+            analytic = self.prob_opp(lambda x: x.beats(card, self.trump))
+            sim = self.sim_prob_opp(lambda x: x.beats(card, self.trump))
+            p_cover = (analytic + sim) / 2
+            dup_bonus = -3 if sum(1 for c in self.player if c.rank == card.rank) > 1 else 0
+            score = self.cost(card) * (1 + 2 * p_cover) + dup_bonus
             if score < best_score:
                 best_score, best = score, card
         return best
 
     def defense_action(self) -> Tuple[str, Optional[str]]:
-        # try translate
         ranks = {atk.rank for atk in self.table.unbeaten()}
         translate_opts = [c for c in self.player if c.rank in ranks]
         if translate_opts:
             best = min(translate_opts, key=self.cost)
-            return 'перевод', best.key
-        # else defend cheapest first unbeaten
+            p_fail = (self.prob_opp(lambda x: x.beats(best, self.trump)) +
+                      self.sim_prob_opp(lambda x: x.beats(best, self.trump))) / 2
+            if p_fail < 0.5:
+                return 'перевод', best.key
+
         if not self.table.unbeaten():
             return '', None
-        target = self.table.unbeaten()[0]
-        beaters = [c for c in self.player if c.beats(target, self.trump)]
-        if beaters:
-            best = min(beaters, key=self.cost)
-            return 'защита', f"{target.key}>{best.key}"
+
+        best_pair = None
+        best_score = float('inf')
+        for target in self.table.unbeaten():
+            beaters = [c for c in self.player if c.beats(target, self.trump)]
+            if not beaters:
+                continue
+            cand = min(beaters, key=self.cost)
+            extra_prob = self.prob_opp(lambda x: x.rank == target.rank)
+            score = self.cost(cand) * (1 + extra_prob)
+            if score < best_score:
+                best_score = score
+                best_pair = (target, cand)
+        if best_pair:
+            atk, dfn = best_pair
+            return 'защита', f"{atk.key}>{dfn.key}"
         return 'взятие', None
 
 
@@ -169,7 +210,11 @@ def main():
             continue
 
         # ход оппонента: пользователь вводит действия
-        tokens = parse_cards(input('Карты оппа / пары: ').split())
+        try:
+            tokens = parse_cards(input('Карты оппа / пары: ').split())
+        except EOFError:
+            print('Нет ввода от оппонента. Завершение.')
+            break
         for tok in tokens:
             if '>' in tok:  # defense pair
                 atk_s, def_s = tok.split('>')

@@ -81,6 +81,7 @@ class GameState:
         self.table = Table()
         self.discard: List[Card] = []
         self.turn = 'you'  # or 'opp'
+        self.deck: int = 36
 
     # ---------- util ----------
     def unseen(self) -> List[Card]:
@@ -126,6 +127,24 @@ class GameState:
     def cost(self, card: Card) -> int:
         base = Card.order.index(card.rank)
         return base + (9 if card.suit == self.trump else 0)
+
+    def replenish(self):
+        """Ask user about new cards from the deck and update state."""
+        if self.deck <= 0:
+            return
+        try:
+            mine = parse_cards(input('Ваш добор из колоды: ').split())
+        except EOFError:
+            mine = []
+        self.player.extend(Card(c) for c in mine)
+        try:
+            opp_take = int(input('Сколько карт добрал соперник? ').strip() or '0')
+        except (EOFError, ValueError):
+            opp_take = 0
+        self.opp_size += opp_take
+        self.deck -= len(mine) + opp_take
+        if self.deck < 0:
+            self.deck = 0
 
     # ---------- decision ----------
     def best_attack(self) -> Optional[Card]:
@@ -192,11 +211,13 @@ def main():
     g.trump = g.trump_card.suit
     g.player = [Card(c) for c in parse_cards(input('Ваши карты: ').split())]
     g.turn = 'you' if input('Кто первым? (1-вы 2-опп): ').strip() == '1' else 'opp'
+    g.deck = 36 - len(g.player) - g.opp_size - 1
 
     while True:
         print('\n==== Состояние ====')
         print('Ваши:', ' '.join(str(c) for c in g.player))
         print('Стол :', g.table)
+        print(f'Колода: {g.deck} | карт у оппа: {g.opp_size}')
 
         if g.turn == 'you':
             atk = g.best_attack()
@@ -227,6 +248,7 @@ def main():
             print('Бот берёт все карты')
             g.player.extend(g.table.clear())
             g.turn = 'you'
+            g.replenish()
             continue
         if action == 'перевод':
             c = Card(payload)
@@ -244,6 +266,7 @@ def main():
             if not g.table.unbeaten():
                 g.discard.extend(g.table.clear())
                 g.turn = 'you'
+                g.replenish()
             else:
                 g.turn = 'opp'
 
